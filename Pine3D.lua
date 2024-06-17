@@ -1252,7 +1252,7 @@ end
 
 ---@param path string
 function loadModel(path)
-	local modelFile = fs.open(path, "r")
+	local modelFile = fs.open(path, "rb")
 	if not modelFile then
 		error("Could not find model for an object at path: " .. path)
 	end
@@ -1275,7 +1275,63 @@ function loadModel(path)
 	---@field alignBottom fun(self: Model): Model Translates the model such that the bottom aligns with y = 0
 	---@field decimate fun(self: Model, quality: number, mode?: "ratio"|"polys"): Model Triangle decimation (reduce the quality / number of polygons in a model)
 	---@field toLoD fun(self: Model, settings: {minQuality: number?, variantCount: number?, qualityHalvingDistance: number?, quickInitWorseRuntime: boolean?}?): LoDModel Create a new Level of Detail Model
-	local model = textutils.unserialise(content)
+	local model
+
+	if content:sub(1, 4) == "P3Dm" then
+		-- compressed model format
+		-- format:
+		--   4 - header (P3Dm)
+		--   4 - number of polygons
+		--   list of polygon data:
+		--     1 - color/flags
+		--       0x80 - forceRender
+		--       0x40 - has texture and UV map (see below)
+		--       0x0F - polygon color
+		--     4 - vertex 1 X (float)
+		--     4 - vertex 1 Y (float)
+		--     4 - vertex 1 Z (float)
+		--     4 - vertex 2 X (float)
+		--     4 - vertex 2 Y (float)
+		--     4 - vertex 2 Z (float)
+		--     4 - vertex 3 X (float)
+		--     4 - vertex 3 Y (float)
+		--     4 - vertex 3 Z (float)
+		--     if color & 0x40:
+		--       2 - vertex 1 U
+		--       2 - vertex 1 V
+		--       2 - vertex 2 U
+		--       2 - vertex 2 V
+		--       2 - vertex 3 U
+		--       2 - vertex 3 V
+		--       2 - texture width
+		--       2 - texture height
+		--       (w*h/2) - texture data (packed 4bpp; high nibble, then low nibble; stride rounded up to 2)
+		local npolys = ("<I4"):unpack(content, 5)
+		local pos = 9
+		for i = 1, npolys do
+			local o = {}
+			model[i] = o
+			o.c, o.x1, o.y1, o.z1, o.x2, o.y2, o.z2, o.x3, o.y3, o.z3, pos = ("<Bfffffffff"):unpack(content, pos)
+			o.forceRender = bit32.btest(o.c, 0x80)
+			if bit32.btest(o.c, 0x40) then
+				-- load texture and UV map
+				o.c = {("<HHHHHHHH"):unpack(content, pos)}
+				local w, h = o.c[7], o.c[8]
+				pos = o.c[9]
+				o.c[7], o.c[8], o.c[9] = {}, nil, nil
+				for y = 1, h do
+					local l = {}
+					o.c[7][y] = l
+					for x = 1, w, 2 do
+						local c = content:byte(pos + (y - 1) * ceil(w / 2) + (x - 1) / 2)
+						l[x] = bit32.rshift(c, 4)
+						l[x+1] = bit32.band(c, 0x0F)
+					end
+				end
+				pos = pos + h * ceil(w / 2)
+			else o.c = 2^bit32.band(o.c, 0x0F) end
+		end
+	else model = textutils.unserialise(content)	end
 
 	for name, func in pairs(transforms) do
 		model[name] = func
