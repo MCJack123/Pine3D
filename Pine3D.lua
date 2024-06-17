@@ -9,6 +9,7 @@ local floor = math.floor
 local ceil = math.ceil
 local unpack = table.unpack
 local abs = math.abs
+local type = type
 
 ---Creates a new Buffer for rendering triangles
 ---@param x integer the new x position of the window
@@ -318,6 +319,9 @@ local function newBuffer(x, y, w, h)
 		local frameHeight = self.height
 		if y1 > frameHeight and y2 > frameHeight and y3 > frameHeight then return end
 
+		local floor, ceil = floor, ceil
+		local min, max = min, max
+
 		if type(c) == "table" then
 			-- texture+coords
 			local x3, y3 = x3, y3
@@ -354,9 +358,6 @@ local function newBuffer(x, y, w, h)
 			x1, x2 = x2, x1
 			z1, z2 = z2, z1
 		end
-
-		local floor, ceil = floor, ceil
-		local min, max = min, max
 
 		local minY = min(max(1, ceil(y1)), frameHeight)
 		local midY = min(max(0, floor(y2)), frameHeight)
@@ -1393,6 +1394,8 @@ local function newFrame(x, y, w, h)
 	---@param camera CollapsedCamera
 	---@param cameraAngles CameraAngles
 	function frame:drawObject(object, camera, cameraAngles)
+		local abs, sin, cos = abs, sin, cos
+
 		local oX = object[1]
 		local oY = object[2]
 		local oZ = object[3]
