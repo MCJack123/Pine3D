@@ -323,21 +323,22 @@ local function newBuffer(x, y, w, h)
 		local min, max = min, max
 
 		if type(c) == "table" then
-			-- texture+coords
+			-- texture+coords	
 			local x3, y3 = x3, y3
 			local u1, v1, u2, v2, u3, v3, tex = unpack(c, 1, 7)
 			local minu, minv, maxu, maxv = min(u1, u2, u3), min(v1, v2, v3), max(u1, u2, u3), max(v1, v2, v3) -- TODO: constantize
+			u1, v1, u2, v2, u3, v3 = u1 / z1, v1 / z1, u2 / z2, v2 / z2, u3 / z3, v3 / z3
 			local bycy, cxbx, cyay, axcx, aycy = y2 - y3, x3 - x2, y3 - y1, x1 - x3, y1 - y3
-			function c(px, py)
+			local den = bycy * axcx + cxbx * aycy
+			function c(px, py, zInv)
 				local pxcx, pycy = px - x3, py - y3
-				local den = bycy * axcx + cxbx * aycy
 
 				local ba = (bycy * pxcx + cxbx * pycy) / den
 				local bb = (cyay * pxcx + axcx * pycy) / den
 				local bc = 1 - ba - bb
 
-				local u = min(max(floor(ba * u1 + bb * u2 + bc * u3), minu), maxu)
-				local v = min(max(floor(ba * v1 + bb * v2 + bc * v3), minv), maxv)
+				local u = min(max(floor((ba * u1 + bb * u2 + bc * u3) / zInv), minu), maxu)
+				local v = min(max(floor((ba * v1 + bb * v2 + bc * v3) / zInv), minv), maxv)
 
 				return tex[v][u]
 			end
@@ -411,7 +412,7 @@ local function newBuffer(x, y, w, h)
 					local zInv = zAInv + xRatio * slopeZ_XInv
 					if zInv > depthsY[x] then
 						depthsY[x] = zInv
-						colorsY[x] = isf and c(x, y, 1/zInv, poly) or c
+						colorsY[x] = isf and c(x, y, zInv, poly) or c
 					end
 				end
 			end
@@ -458,7 +459,7 @@ local function newBuffer(x, y, w, h)
 					local zInv = zAInv + xRatio * slopeZ_XInv
 					if zInv > depthsY[x] then
 						depthsY[x] = zInv
-						colorsY[x] = isf and c(x, y, 1/zInv, poly) or c
+						colorsY[x] = isf and c(x, y, zInv, poly) or c
 					end
 				end
 			end
