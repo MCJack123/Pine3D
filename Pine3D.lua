@@ -213,7 +213,7 @@ local function newBuffer(x, y, w, h)
 
 	local defaultOutlineColor = colors.black
 
-	function buffer:drawTriangleNoInterp(x1, y1, x2, y2, x3, y3, c, outlineColor, depth, _, _, _, poly)
+	function buffer:drawTriangleNoInterp(x1, y1, x2, y2, x3, y3, c, outlineColor, depth, _, _, _, poly, fshader, interpVars)
 		if x1 < 0 and x2 < 0 and x3 < 0 or y1 < 1 and y2 < 1 and y3 < 1 then return end
 
 		local frameWidth = self.width
@@ -311,7 +311,7 @@ local function newBuffer(x, y, w, h)
 		end
 	end
 
-	function buffer:drawTriangleInterp(x1, y1, x2, y2, x3, y3, c, outlineColor, d, z1, z2, z3, poly)
+	function buffer:drawTriangleInterp(x1, y1, x2, y2, x3, y3, c, outlineColor, d, z1, z2, z3, poly, fshader, interpVars)
 		if x1 < 0 and x2 < 0 and x3 < 0 or y1 < 1 and y2 < 1 and y3 < 1 then return end
 
 		local frameWidth = self.width
@@ -330,7 +330,7 @@ local function newBuffer(x, y, w, h)
 			u1, v1, u2, v2, u3, v3 = u1 / z1, v1 / z1, u2 / z2, v2 / z2, u3 / z3, v3 / z3
 			local bycy, cxbx, cyay, axcx, aycy = y2 - y3, x3 - x2, y3 - y1, x1 - x3, y1 - y3
 			local den = bycy * axcx + cxbx * aycy
-			function c(px, py, zInv)
+			function c(px, py, zInv, poly, _, interp)
 				local pxcx, pycy = px - x3, py - y3
 
 				local ba = (bycy * pxcx + cxbx * pycy) / den
@@ -340,7 +340,19 @@ local function newBuffer(x, y, w, h)
 				local u = min(max(floor((ba * u1 + bb * u2 + bc * u3) / zInv), minu), maxu)
 				local v = min(max(floor((ba * v1 + bb * v2 + bc * v3) / zInv), minv), maxv)
 
+				if fshader then return fshader(px, py, zInv, poly, tex[v][u], interp) end
 				return tex[v][u]
+			end
+		elseif fshader then
+			local oldc = c
+			function c(px, py, zInv, poly, _, interp) return fshader(px, py, zInv, poly, oldc, interp) end
+		end
+
+		local interpInv, interpCount = {}, 0
+		if interpVars then
+			for k, v in pairs(interpVars) do
+				interpCount = interpCount + 1
+				interpInv[interpCount] = {k, v[1] == 0 and 0 or 1 / v[1], v[2] == 0 and 0 or 1 / v[2], v[3] == 0 and 0 or 1 / v[3]}
 			end
 		end
 
@@ -348,16 +360,28 @@ local function newBuffer(x, y, w, h)
 			y1, y2 = y2, y1
 			x1, x2 = x2, x1
 			z1, z2 = z2, z1
+			for i = 1, interpCount do
+				local v = interpInv[i]
+				v[2], v[3] = v[3], v[2]
+			end
 		end
 		if y2 > y3 then
 			y3, y2 = y2, y3
 			x3, x2 = x2, x3
 			z3, z2 = z2, z3
+			for i = 1, interpCount do
+				local v = interpInv[i]
+				v[3], v[4] = v[4], v[3]
+			end
 		end
 		if y1 > y2 then
 			y1, y2 = y2, y1
 			x1, x2 = x2, x1
 			z1, z2 = z2, z1
+			for i = 1, interpCount do
+				local v = interpInv[i]
+				v[2], v[3] = v[3], v[2]
+			end
 		end
 
 		local minY = min(max(1, ceil(y1)), frameHeight)
@@ -380,6 +404,11 @@ local function newBuffer(x, y, w, h)
 			local slopeX_YB = (x3 - x1) / y3_min_y1
 			local slopeZ_YAInv = z2Inv - z1Inv
 			local slopeZ_YBInv = z3Inv - z1Inv
+			for i = 1, interpCount do
+				local v = interpInv[i]
+				v[5] = v[3] - v[2]
+				v[6] = v[4] - v[2]
+			end
 
 			for y = minY, midY do
 				local dy = y - y1
@@ -389,9 +418,18 @@ local function newBuffer(x, y, w, h)
 				local yRatioB = dy / y3_min_y1
 				local zAInv = z1Inv + yRatioA * slopeZ_YAInv
 				local zBInv = z1Inv + yRatioB * slopeZ_YBInv
+				for i = 1, interpCount do
+					local v = interpInv[i]
+					v[7] = v[2] + yRatioA * v[5]
+					v[8] = v[2] + yRatioB * v[6]
+				end
 				if xB < xA then
 					xA, xB = xB, xA
 					zAInv, zBInv = zBInv, zAInv
+					for i = 1, interpCount do
+						local v = interpInv[i]
+						v[7], v[8] = v[8], v[7]
+					end
 				end
 
 				local xABounded = floor(xA + 1.5)
@@ -406,13 +444,23 @@ local function newBuffer(x, y, w, h)
 				local colorsY = colors[y]
 				local depthsY = depths[y]
 				local slopeZ_XInv = zBInv - zAInv
+				for i = 1, interpCount do
+					local v = interpInv[i]
+					v[9] = v[8] - v[7]
+				end
 
 				for x = xABounded, xBBounded do
 					local xRatio = (x - xA) / xLength
 					local zInv = zAInv + xRatio * slopeZ_XInv
+					local interp = {}
+					for i = 1, interpCount do
+						local v = interpInv[i]
+						local n = (v[7] + xRatio * v[9])
+						interp[v[1]] = n == 0 and 0 or 1 / n
+					end
 					if zInv > depthsY[x] then
 						depthsY[x] = zInv
-						colorsY[x] = isf and c(x, y, zInv, poly) or c
+						colorsY[x] = isf and c(x, y, zInv, poly, nil, interp) or c
 					end
 				end
 			end
@@ -426,6 +474,11 @@ local function newBuffer(x, y, w, h)
 			local slopeX_YB = (x1 - x3) / y1_min_y3
 			local slopeZ_YAInv = z2Inv - z3Inv
 			local slopeZ_YBInv = z1Inv - z3Inv
+			for i = 1, interpCount do
+				local v = interpInv[i]
+				v[5] = v[3] - v[4]
+				v[6] = v[2] - v[4]
+			end
 
 			for y = midY + 1, maxY do
 				local dy = y - y3
@@ -435,10 +488,19 @@ local function newBuffer(x, y, w, h)
 				local yRatioB = dy / y1_min_y3
 				local zAInv = z3Inv + yRatioA * slopeZ_YAInv
 				local zBInv = z3Inv + yRatioB * slopeZ_YBInv
+				for i = 1, interpCount do
+					local v = interpInv[i]
+					v[7] = v[4] + yRatioA * v[5]
+					v[8] = v[4] + yRatioB * v[6]
+				end
 
 				if xB < xA then
 					xA, xB = xB, xA
 					zAInv, zBInv = zBInv, zAInv
+					for i = 1, interpCount do
+						local v = interpInv[i]
+						v[7], v[8] = v[8], v[7]
+					end
 				end
 
 				local xABounded = floor(xA + 1.5)
@@ -453,13 +515,23 @@ local function newBuffer(x, y, w, h)
 				local colorsY = colors[y]
 				local depthsY = depths[y]
 				local slopeZ_XInv = zBInv - zAInv
+				for i = 1, interpCount do
+					local v = interpInv[i]
+					v[9] = v[8] - v[7]
+				end
 
 				for x = xABounded, xBBounded do
 					local xRatio = (x - xA) / xLength
 					local zInv = zAInv + xRatio * slopeZ_XInv
+					local interp = {}
+					for i = 1, interpCount do
+						local v = interpInv[i]
+						local n = (v[7] + xRatio * v[9])
+						interp[v[1]] = n == 0 and 0 or 1 / n
+					end
 					if zInv > depthsY[x] then
 						depthsY[x] = zInv
-						colorsY[x] = isf and c(x, y, zInv, poly) or c
+						colorsY[x] = isf and c(x, y, zInv, poly, nil, interp) or c
 					end
 				end
 			end
@@ -769,18 +841,18 @@ end
 ---Scales the model
 ---@param model Model
 ---@param scale number
-function transforms.scale(model, scale)
+function transforms.scale(model, scale, scaleY, scaleZ)
 	for i = 1, #model do
 		local poly = model[i]
 		poly.x1 = poly.x1 * scale
 		poly.x2 = poly.x2 * scale
 		poly.x3 = poly.x3 * scale
-		poly.y1 = poly.y1 * scale
-		poly.y2 = poly.y2 * scale
-		poly.y3 = poly.y3 * scale
-		poly.z1 = poly.z1 * scale
-		poly.z2 = poly.z2 * scale
-		poly.z3 = poly.z3 * scale
+		poly.y1 = poly.y1 * (scaleY or scale)
+		poly.y2 = poly.y2 * (scaleY or scale)
+		poly.y3 = poly.y3 * (scaleY or scale)
+		poly.z1 = poly.z1 * (scaleZ or scale)
+		poly.z2 = poly.z2 * (scaleZ or scale)
+		poly.z3 = poly.z3 * (scaleZ or scale)
 	end
 
 	return model
@@ -1270,7 +1342,7 @@ function loadModel(path)
 	---@field center fun(self: Model): Model Center the Model such that the origin is in the middle of the bounding box
 	---@field normalizeScale fun(self: Model): Model Rescales the model such that the largest value of any coordinate is equal to 1
 	---@field normalizeScaleY fun(self: Model): Model Similar to normalizeScale, rescales the model, but only uses the y coordinate to determine how much it is scaled (normalizes height)
-	---@field scale fun(self: Model, scale: number): Model Scales the model
+	---@field scale fun(self: Model, scale: number, scaleY: number?, scaleZ: number?): Model Scales the model
 	---@field translate fun(self: Model, dx: number?, dy: number?, dz: number?): Model Translates the model
 	---@field rotate fun(self: Model, rotX: number?, rotY: number?, rotZ: number?): Model Rotates a given Model around three axes (radians)
 	---@field alignBottom fun(self: Model): Model Translates the model such that the bottom aligns with y = 0
@@ -1592,24 +1664,40 @@ local function newFrame(x, y, w, h)
 		for i = 1, #depthPolygons do
 			local polygon = depthPolygons[i]
 			local depth = polygon[16]
+			local interpVars
 
 			local rx1, ry1, rz1 = polygon[1], polygon[2], polygon[3]
-			if vshader then rx1, ry1, rz1 = vshader(rx1, ry1, rz1, polygon, 1) end
+			if vshader then
+				local interp1
+				rx1, ry1, rz1, interp1 = vshader(rx1, ry1, rz1, polygon, 1)
+				if interp1 then
+					interpVars = {}
+					for k, v in pairs(interp1) do interpVars[k] = {v} end
+				end
+			end
 			local px1, py1, pz1 = rx1 + xCameraOffset, ry1 + yCameraOffset, rz1 + zCameraOffset
 			local x1, y1, dX1 = map3dTo2d(px1, py1, pz1)
 			if dX1 > 0.00010000001 then
 				local rx2, ry2, rz2 = polygon[4], polygon[5], polygon[6]
-				if vshader then rx2, ry2, rz2 = vshader(rx2, ry2, rz2, polygon, 2) end
+				if vshader then
+					local interp2
+					rx2, ry2, rz2, interp2 = vshader(rx2, ry2, rz2, polygon, 2)
+					if interp2 then for k, v in pairs(interp2) do interpVars[k][2] = v end end
+				end
 				local px2, py2, pz2 = rx2 + xCameraOffset, ry2 + yCameraOffset, rz2 + zCameraOffset
 				local x2, y2, dX2 = map3dTo2d(px2, py2, pz2)
 				if dX2 > 0.00010000001 then
 					local rx3, ry3, rz3 = polygon[7], polygon[8], polygon[9]
-					if vshader then rx3, ry3, rz3 = vshader(rx3, ry3, rz3, polygon, 3) end
+					if vshader then
+						local interp3
+						rx3, ry3, rz3, interp3 = vshader(rx3, ry3, rz3, polygon, 3)
+						if interp3 then for k, v in pairs(interp3) do interpVars[k][3] = v end end
+					end
 					local px3, py3, pz3 = rx3 + xCameraOffset, ry3 + yCameraOffset, rz3 + zCameraOffset
 					local x3, y3, dX3 = map3dTo2d(px3, py3, pz3)
 					if dX3 > 0.00010000001 then
 						if polygon[10] or (x2 - x1) * (y3 - y2) - (y2 - y1) * (x3 - x2) < 0 then
-							buff:drawTriangle(x1, y1, x2, y2, x3, y3, fshader or polygon[11], polygon[12], depth, dX1, dX2, dX3, polygon)
+							buff:drawTriangle(x1, y1, x2, y2, x3, y3, polygon[11], polygon[12], depth, dX1, dX2, dX3, polygon, fshader, interpVars)
 						end
 					elseif clippingEnabled then
 						local function map3dTo2dFull(x, y, z)
@@ -1654,7 +1742,7 @@ local function newFrame(x, y, w, h)
 						local AY = (newPosAY * 10000) * sYFactor + renderOffsetY
 
 						if polygon[10] or (x2 - x1) * (AY - y2) - (y2 - y1) * (AX - x2) < 0 then
-							buff:drawTriangle(x1, y1, x2, y2, AX, AY, fshader or polygon[11], polygon[12], depth, dX1, dX2, 0.0001, polygon)
+							buff:drawTriangle(x1, y1, x2, y2, AX, AY, polygon[11], polygon[12], depth, dX1, dX2, 0.0001, polygon, fshader, interpVars)
 
 							local w2 = abs(dX2 - 0.0001)
 							local wT = w2 + w3
@@ -1663,7 +1751,7 @@ local function newFrame(x, y, w, h)
 
 							local BX = (newPosAZ * 10000) * sXFactor + renderOffsetX
 							local BY = (newPosAY * 10000) * sYFactor + renderOffsetY
-							buff:drawTriangle(BX, BY, x2, y2, AX, AY, fshader or polygon[11], polygon[12], depth, 0.0001, dX2, 0.0001, polygon)
+							buff:drawTriangle(BX, BY, x2, y2, AX, AY, polygon[11], polygon[12], depth, 0.0001, dX2, 0.0001, polygon, fshader, interpVars)
 						end
 					end
 				elseif clippingEnabled then
@@ -1693,7 +1781,11 @@ local function newFrame(x, y, w, h)
 					end
 
 					local rx3, ry3, rz3 = polygon[7], polygon[8], polygon[9]
-					if vshader then rx3, ry3, rz3 = vshader(rx3, ry3, rz3, polygon, 3) end
+					if vshader then
+						local interp3
+						rx3, ry3, rz3, interp3 = vshader(rx3, ry3, rz3, polygon, 3)
+						if interp3 then for k, v in pairs(interp3) do interpVars[k][3] = v end end
+					end
 					local x1, y1, dX1, dY1, dZ1 = map3dTo2dFull(rx1, ry1, rz1)
 					local x2, y2, dX2, dY2, dZ2 = map3dTo2dFull(rx2, ry2, rz2)
 					local x3, y3, dX3, dY3, dZ3 = map3dTo2dFull(rx3, ry3, rz3)
@@ -1712,7 +1804,7 @@ local function newFrame(x, y, w, h)
 						local AY = (newPosAY * 10000) * sYFactor + renderOffsetY
 
 						if polygon[10] or (AX - x1) * (y3 - AY) - (AY - y1) * (x3 - AX) < 0 then
-							buff:drawTriangle(x1, y1, AX, AY, x3, y3, fshader or polygon[11], polygon[12], depth, dX1, 0.0001, dX3, polygon)
+							buff:drawTriangle(x1, y1, AX, AY, x3, y3, polygon[11], polygon[12], depth, dX1, 0.0001, dX3, polygon, fshader, interpVars)
 
 							local w3 = abs(dX3 - 0.0001)
 							local wT = w2 + w3
@@ -1721,7 +1813,7 @@ local function newFrame(x, y, w, h)
 
 							local BX = (newPosAZ * 10000) * sXFactor + renderOffsetX
 							local BY = (newPosAY * 10000) * sYFactor + renderOffsetY
-							buff:drawTriangle(BX, BY, AX, AY, x3, y3, fshader or polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon)
+							buff:drawTriangle(BX, BY, AX, AY, x3, y3, polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon, fshader, interpVars)
 						end
 					else
 						-- 1 0 0
@@ -1744,7 +1836,7 @@ local function newFrame(x, y, w, h)
 						local BY = (newPosBY * 10000) * sYFactor + renderOffsetY
 
 						if polygon[10] or (AX - x1) * (BY - AY) - (AY - y1) * (BX - AX) < 0 then
-							buff:drawTriangle(x1, y1, AX, AY, BX, BY, fshader or polygon[11], polygon[12], depth, dX1, 0.0001, 0.0001, polygon)
+							buff:drawTriangle(x1, y1, AX, AY, BX, BY, polygon[11], polygon[12], depth, dX1, 0.0001, 0.0001, polygon, fshader, interpVars)
 						end
 					end
 				end
@@ -1775,9 +1867,17 @@ local function newFrame(x, y, w, h)
 				end
 
 				local rx2, ry2, rz2 = polygon[4], polygon[5], polygon[6]
-				if vshader then rx2, ry2, rz2 = vshader(rx2, ry2, rz2, polygon, 2) end
+				if vshader then
+					local interp2
+					rx2, ry2, rz2, interp2 = vshader(rx2, ry2, rz2, polygon, 2)
+					if interp2 then for k, v in pairs(interp2) do interpVars[k][2] = v end end
+				end
 				local rx3, ry3, rz3 = polygon[7], polygon[8], polygon[9]
-				if vshader then rx3, ry3, rz3 = vshader(rx3, ry3, rz3, polygon, 3) end
+				if vshader then
+					local interp3
+					rx3, ry3, rz3, interp3 = vshader(rx3, ry3, rz3, polygon, 3)
+					if interp3 then for k, v in pairs(interp3) do interpVars[k][3] = v end end
+				end
 				local x1, y1, dX1, dY1, dZ1 = map3dTo2dFull(rx1, ry1, rz1)
 				local x2, y2, dX2, dY2, dZ2 = map3dTo2dFull(rx2, ry2, rz2)
 				local x3, y3, dX3, dY3, dZ3 = map3dTo2dFull(rx3, ry3, rz3)
@@ -1796,7 +1896,7 @@ local function newFrame(x, y, w, h)
 						local AX = (newPosAZ * 10000) * sXFactor + renderOffsetX
 						local AY = (newPosAY * 10000) * sYFactor + renderOffsetY
 						if polygon[10] or (x2 - AX) * (y3 - y2) - (y2 - AY) * (x3 - x2) < 0 then
-							buff:drawTriangle(AX, AY, x2, y2, x3, y3, fshader or polygon[11], polygon[12], depth, 0.0001, dX2, dX3, polygon)
+							buff:drawTriangle(AX, AY, x2, y2, x3, y3, polygon[11], polygon[12], depth, 0.0001, dX2, dX3, polygon, fshader, interpVars)
 
 							local w3 = abs(dX3 - 0.0001)
 							local wT = w1 + w3
@@ -1805,7 +1905,7 @@ local function newFrame(x, y, w, h)
 
 							local BX = (newPosAZ * 10000) * sXFactor + renderOffsetX
 							local BY = (newPosAY * 10000) * sYFactor + renderOffsetY
-							buff:drawTriangle(AX, AY, BX, BY, x3, y3, fshader or polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon)
+							buff:drawTriangle(AX, AY, BX, BY, x3, y3, polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon, fshader, interpVars)
 						end
 					else
 						-- 0 1 0
@@ -1828,7 +1928,7 @@ local function newFrame(x, y, w, h)
 						local BY = (newPosBY * 10000) * sYFactor + renderOffsetY
 
 						if polygon[10] or (x2 - AX) * (BY - y2) - (y2 - AY) * (BX - x2) < 0 then
-							buff:drawTriangle(AX, AY, x2, y2, BX, BY, fshader or polygon[11], polygon[12], depth, 0.0001, dX2, 0.0001, polygon)
+							buff:drawTriangle(AX, AY, x2, y2, BX, BY, polygon[11], polygon[12], depth, 0.0001, dX2, 0.0001, polygon, fshader, interpVars)
 						end
 					end
 				else
@@ -1853,7 +1953,7 @@ local function newFrame(x, y, w, h)
 						local BY = (newPosBY * 10000) * sYFactor + renderOffsetY
 
 						if polygon[10] or (BX - AX) * (y3 - BY) - (BY - AY) * (x3 - BX) < 0 then
-							buff:drawTriangle(AX, AY, BX, BY, x3, y3, fshader or polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon)
+							buff:drawTriangle(AX, AY, BX, BY, x3, y3, polygon[11], polygon[12], depth, 0.0001, 0.0001, dX3, polygon, fshader, interpVars)
 						end
 						--else
 						-- 0 0 0
@@ -2171,13 +2271,13 @@ local function newFrame(x, y, w, h)
 		end
 
 		---Set a vertex shader for the object
-		---@param shader nil|fun(x: number, y: number, z: number, poly: Polygon, vn: number): number, number, number The shader function to run for each vertex
+		---@param shader nil|fun(x: number, y: number, z: number, poly: Polygon, vn: number): number, number, number, {[string]:number}|nil The shader function to run for each vertex
 		function object:setVertexShader(shader)
 			self[10] = shader
 		end
 
 		---Set a fragment shader for the object
-		---@param shader nil|fun(x: number, y: number, depth: number, poly: Polygon): integer The shader function to run for each pixel
+		---@param shader nil|fun(x: number, y: number, depth: number, poly: Polygon, texcolor?: number, interpVars?: {[string]:number}): integer The shader function to run for each pixel
 		function object:setFragmentShader(shader)
 			self[11] = shader
 		end

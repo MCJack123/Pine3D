@@ -36,6 +36,7 @@ if compressed then
 				v.x1, v.y1, v.z1, v.x2, v.y2, v.z2, v.x3, v.y3, v.z3)
 		end
 	end
+	model = data
 else model = textutils.serialise(model) end
 
 print("Saving model...")

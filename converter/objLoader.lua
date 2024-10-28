@@ -182,7 +182,7 @@ function loadObjFile(id)
 			local faceVTs = {}
 			for _, part in pairs({parts[2], parts[3], parts[4], parts[5]}) do
 				local parts2 = {}
-				for part2 in part:gmatch("-?%d+") do
+				for part2 in part:gmatch("%-?%d+") do
 					parts2[#parts2+1] = part2
 				end
 
@@ -194,10 +194,12 @@ function loadObjFile(id)
 				end
 
 				local vtIndex = tonumber(parts2[2])
-				if vtIndex > 0 then
-					faceVTs[#faceVTs+1] = vts[vtIndex]
-				else
-					faceVTs[#faceVTs+1] = vts[#vts + vtIndex + 1]
+				if vtIndex then
+					if vtIndex > 0 then
+						faceVTs[#faceVTs+1] = vts[vtIndex]
+					else
+						faceVTs[#faceVTs+1] = vts[#vts + vtIndex + 1]
+					end
 				end
 			end
 
@@ -236,7 +238,7 @@ function loadObjFile(id)
 				poly.forceRender = true
 			end
 
-			do
+			if faceVTs[1] then
 				local v1 = faceVTs[1]
 				local v2 = faceVTs[2]
 				local v3 = faceVTs[3]
@@ -254,6 +256,22 @@ function loadObjFile(id)
 					local color = texture[height - textureY + 1][textureX]
 					poly.c = colorChar[color] or colors.red
 				else
+					if mat.baseColor then
+						poly.c = mat.baseColor
+					else
+						if not materialsWarned[material] then
+							term.setTextColor(colors.orange)
+							print("Warning: no texture found for material \"" .. material .. "\"")
+							term.setTextColor(colors.white)
+							materialsWarned[material] = true
+						end
+						poly.c = colors.red
+					end
+				end
+			else
+				local mat = materials.map[material]
+				local texture = mat.texture
+				if not texture then
 					if mat.baseColor then
 						poly.c = mat.baseColor
 					else
